@@ -3,14 +3,14 @@ requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "moonpy"
+name = "moonpie"
 dynamic = ["version"]
 description = "A Lua interpreter written in Python"
 readme = "README.md"
 requires-python = ">=3.7"
 license = {text = "MIT"}
 authors = [
-    {name = "MoonPy", email = "moonpy@example.com"}
+    {name = "MoonPie", email = "java4life@gmail.com"}
 ]
 keywords = ["lua", "interpreter", "scripting", "language"]
 classifiers = [
@@ -30,13 +30,13 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/moonpy"
-Documentation = "https://github.com/yourusername/moonpy#readme"
-Repository = "https://github.com/yourusername/moonpy"
-"Bug Reports" = "https://github.com/yourusername/moonpy/issues"
+Homepage = "https://github.com/rhulha/MoonPie"
+Documentation = "https://github.com/rhulha/MoonPie#readme"
+Repository = "https://github.com/rhulha/MoonPie"
+"Bug Reports" = "https://github.com/rhulha/MoonPie/issues"
 
 [project.scripts]
-moonpy = "moonpy.__main__:main"
+moonpie = "moonpie.__main__:main"
 
 [project.optional-dependencies]
 dev = [
@@ -46,7 +46,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["moonpy"]
+packages = ["moonpie"]
 
 [tool.setuptools.dynamic]
-version = {attr = "moonpy.__version__"}
+version = {attr = "moonpie.__version__"}

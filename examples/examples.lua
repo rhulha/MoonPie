@@ -1,4 +1,4 @@
--- MoonPy Lua Interpreter Examples
+-- MoonPie Lua Interpreter Examples
 
 print("=== Fibonacci Sequence ===")
 function fibonacci(n)

@@ -1,4 +1,4 @@
-# MoonPy - Lua Interpreter in Python
+# MoonPie - Lua Interpreter in Python
 
 A Lua interpreter written in Python, implementing core Lua language features.
 
@@ -6,13 +6,13 @@ A Lua interpreter written in Python, implementing core Lua language features.
 
 ### From PyPI (when published)
 ```bash
-pip install moonpy
+pip install moonpie
 ```
 
 ### From Source
 ```bash
-git clone https://github.com/yourusername/moonpy.git
-cd moonpy
+git clone https://github.com/rhulha/MoonPie.git
+cd moonpie
 pip install -e .
 ```
 
@@ -47,20 +47,20 @@ The interpreter follows a classic architecture:
 
 ### Command Line (after installation)
 ```bash
-moonpy                    # Start interactive REPL
-moonpy script.lua         # Execute a Lua file
-moonpy examples/examples.lua
+moonpie                    # Start interactive REPL
+moonpie script.lua         # Execute a Lua file
+moonpie examples/examples.lua
 ```
 
 ### Python Module
 ```bash
-python -m moonpy          # Start interactive REPL
-python -m moonpy script.lua
+python -m moonpie          # Start interactive REPL
+python -m moonpie script.lua
 ```
 
 ### As a Library
 ```python
-from moonpy import LuaInterpreter
+from moonpie import LuaInterpreter
 
 interpreter = LuaInterpreter()
 result = interpreter.run("""
@@ -111,14 +111,14 @@ print(greeting)  -- Hello World
 
 Run the test suite:
 ```bash
-moonpy tests/test_basic.lua
+moonpie tests/test_basic.lua
 # or
-python -m moonpy tests/test_basic.lua
+python -m moonpie tests/test_basic.lua
 ```
 
 Run examples:
 ```bash
-moonpy examples/examples.lua
+moonpie examples/examples.lua
 ```
 
 ## Implementation Details

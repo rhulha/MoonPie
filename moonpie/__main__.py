@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-MoonPy Command Line Interface
+MoonPie Command Line Interface
 
 This module provides command-line execution capabilities for Lua files
 and an interactive REPL (Read-Eval-Print Loop).
 
 Usage:
-    python -m moonpy <file.lua>    # Execute a Lua file
-    python -m moonpy               # Start interactive REPL
-    moonpy <file.lua>              # Execute a Lua file (after installation)
-    moonpy                         # Start interactive REPL (after installation)
+    python -m moonpie <file.lua>    # Execute a Lua file
+    python -m moonpie               # Start interactive REPL
+    moonpie <file.lua>              # Execute a Lua file (after installation)
+    moonpie                         # Start interactive REPL (after installation)
 """
 
 import sys
@@ -23,7 +23,7 @@ def start_repl():
     """Start the interactive REPL."""
     interpreter = LuaInterpreter()
 
-    print("MoonPy - Lua Interpreter in Python")
+    print("MoonPie - Lua Interpreter in Python")
     print(f"Version {__package__.__version__ if hasattr(__package__, '__version__') else '0.1.0'}")
     print("Type 'exit' or press Ctrl+C to quit")
     print()
@@ -55,9 +55,9 @@ def start_repl():
 def main():
     """Main entry point for command-line execution."""
     parser = argparse.ArgumentParser(
-        prog='moonpy',
-        description='MoonPy - A Lua interpreter written in Python',
-        epilog='Examples:\n  python -m moonpy script.lua    # Execute file\n  python -m moonpy               # Start REPL',
+        prog='moonpie',
+        description='MoonPie - A Lua interpreter written in Python',
+        epilog='Examples:\n  python -m moonpie script.lua    # Execute file\n  python -m moonpie               # Start REPL',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
