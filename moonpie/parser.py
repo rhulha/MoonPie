@@ -1,415 +1,390 @@
-from .lua_token import Token, TokenType
-from .ast_nodes import *
-from typing import List, Optional
+from .lexer import tokenize
+from .lua_object import LuaSyntaxError
+from .ast_nodes import (
+    Const, Vararg, Name, Index, Call, MethodCall, Function, BinOp, And, Or,
+    UnOp, Paren, Table, Block, Local, LocalFunction, Assign, CallStat, Do,
+    While, Repeat, If, NumFor, GenFor, Return, Break,
+)
+
+
+# (left, right) priorities, as in the Lua 5.4 reference implementation
+BINARY_PRIORITY = {
+    'or': (1, 1), 'and': (2, 2),
+    '<': (3, 3), '>': (3, 3), '<=': (3, 3), '>=': (3, 3), '~=': (3, 3), '==': (3, 3),
+    '..': (9, 8),
+    '+': (10, 10), '-': (10, 10),
+    '*': (11, 11), '/': (11, 11), '//': (11, 11), '%': (11, 11),
+    '^': (14, 13),
+}
+UNARY_PRIORITY = 12
+BLOCK_END = frozenset({'eof', 'end', 'else', 'elseif', 'until'})
 
 
 class Parser:
-    def __init__(self, tokens: List[Token]):
-        self.tokens = tokens
+    def __init__(self, source: str, chunkname: str = 'input'):
+        self.chunkname = chunkname
+        self.tokens = tokenize(source, chunkname)
         self.pos = 0
-        self.current_token = self.tokens[0] if tokens else Token(TokenType.EOF, '', 0, 0)
+        self.tok = self.tokens[0]
+        self.vararg = [True]
+        self.loop_depth = [0]
 
     def advance(self):
-        self.pos += 1
-        if self.pos < len(self.tokens):
-            self.current_token = self.tokens[self.pos]
-        else:
-            self.current_token = Token(TokenType.EOF, '', 0, 0)
+        if self.tok.type != 'eof':
+            self.pos += 1
+            self.tok = self.tokens[self.pos]
 
-    def peek(self, offset=1):
-        peek_pos = self.pos + offset
-        if peek_pos < len(self.tokens):
-            return self.tokens[peek_pos]
-        return Token(TokenType.EOF, '', 0, 0)
+    def peek_type(self):
+        return self.tokens[min(self.pos + 1, len(self.tokens) - 1)].type
 
-    def expect(self, token_type: TokenType):
-        if self.current_token.type != token_type:
-            raise SyntaxError(f"Expected {token_type.name}, got {self.current_token.type.name} at {self.current_token.line}:{self.current_token.column}")
-        token = self.current_token
+    def error(self, msg):
+        raise LuaSyntaxError(f"{self.chunkname}:{self.tok.line}: {msg} near '{self.tok.text()}'")
+
+    def accept(self, type):
+        if self.tok.type == type:
+            self.advance()
+            return True
+        return False
+
+    def expect(self, type):
+        if self.tok.type != type:
+            self.error(f"'{type}' expected")
         self.advance()
-        return token
 
-    def match(self, *token_types):
-        return self.current_token.type in token_types
+    def expect_match(self, what, who, line):
+        if self.tok.type != what:
+            if line == self.tok.line:
+                self.error(f"'{what}' expected")
+            self.error(f"'{what}' expected (to close '{who}' at line {line})")
+        self.advance()
+
+    def expect_name(self):
+        if self.tok.type != 'name':
+            self.error("<name> expected")
+        name = self.tok.value
+        self.advance()
+        return name
+
+    # Blocks and statements
 
     def parse(self):
-        statements = []
-        while self.current_token.type != TokenType.EOF:
-            if self.current_token.type == TokenType.SEMICOLON:
-                self.advance()
-                continue
-            stmt = self.parse_statement()
-            if stmt:
-                statements.append(stmt)
-        return Program(statements)
+        body = self.block()
+        if self.tok.type != 'eof':
+            self.error("'<eof>' expected")
+        return Function([], True, body, 'main chunk')
 
-    def parse_statement(self):
-        if self.match(TokenType.LOCAL):
-            return self.parse_local()
-        elif self.match(TokenType.IF):
-            return self.parse_if()
-        elif self.match(TokenType.WHILE):
-            return self.parse_while()
-        elif self.match(TokenType.REPEAT):
-            return self.parse_repeat()
-        elif self.match(TokenType.FOR):
-            return self.parse_for()
-        elif self.match(TokenType.FUNCTION):
-            return self.parse_function()
-        elif self.match(TokenType.RETURN):
-            return self.parse_return()
-        elif self.match(TokenType.BREAK):
+    def block(self):
+        stmts = []
+        has_locals = False
+        while self.tok.type not in BLOCK_END:
+            line = self.tok.line
+            if self.tok.type == 'return':
+                stmt = self.return_stat()
+                stmt.line = line
+                stmts.append(stmt)
+                break
+            stmt = self.statement()
+            if stmt is not None:
+                stmt.line = line
+                stmts.append(stmt)
+                if stmt.__class__ is Local or stmt.__class__ is LocalFunction:
+                    has_locals = True
+        return Block(stmts, has_locals, self.chunkname)
+
+    def statement(self):
+        t = self.tok.type
+        line = self.tok.line
+        if t == ';':
             self.advance()
-            return BreakStatement()
+            return None
+        if t == 'if':
+            return self.if_stat(line)
+        if t == 'while':
+            return self.while_stat(line)
+        if t == 'do':
+            self.advance()
+            body = self.block()
+            self.expect_match('end', 'do', line)
+            return Do(body)
+        if t == 'for':
+            return self.for_stat(line)
+        if t == 'repeat':
+            return self.repeat_stat(line)
+        if t == 'function':
+            return self.function_stat(line)
+        if t == 'local':
+            self.advance()
+            if self.accept('function'):
+                name = self.expect_name()
+                return LocalFunction(name, self.function_body(False, line, name))
+            return self.local_stat()
+        if t == 'break':
+            if self.loop_depth[-1] == 0:
+                self.error(f"break outside a loop at line {line}")
+            self.advance()
+            return Break()
+        return self.expr_stat()
+
+    def loop_body(self):
+        self.loop_depth[-1] += 1
+        body = self.block()
+        self.loop_depth[-1] -= 1
+        return body
+
+    def if_stat(self, line):
+        self.advance()
+        tests = [self.expr()]
+        self.expect('then')
+        blocks = [self.block()]
+        while self.tok.type == 'elseif':
+            self.advance()
+            tests.append(self.expr())
+            self.expect('then')
+            blocks.append(self.block())
+        orelse = self.block() if self.accept('else') else None
+        self.expect_match('end', 'if', line)
+        return If(tests, blocks, orelse)
+
+    def while_stat(self, line):
+        self.advance()
+        cond = self.expr()
+        self.expect('do')
+        body = self.loop_body()
+        self.expect_match('end', 'while', line)
+        return While(cond, body)
+
+    def repeat_stat(self, line):
+        self.advance()
+        body = self.loop_body()
+        self.expect_match('until', 'repeat', line)
+        return Repeat(body, self.expr())
+
+    def for_stat(self, line):
+        self.advance()
+        first = self.expect_name()
+        if self.accept('='):
+            start = self.expr()
+            self.expect(',')
+            stop = self.expr()
+            step = self.expr() if self.accept(',') else None
+            self.expect('do')
+            body = self.loop_body()
+            self.expect_match('end', 'for', line)
+            return NumFor(first, start, stop, step, body)
+        if self.tok.type in (',', 'in'):
+            names = [first]
+            while self.accept(','):
+                names.append(self.expect_name())
+            self.expect('in')
+            exprs = self.expr_list()
+            self.expect('do')
+            body = self.loop_body()
+            self.expect_match('end', 'for', line)
+            return GenFor(names, exprs, body)
+        self.error("'=' or 'in' expected")
+
+    def function_stat(self, line):
+        self.advance()
+        name = self.expect_name()
+        target = Name(name)
+        is_method = False
+        while self.tok.type == '.':
+            self.advance()
+            key = self.expect_name()
+            name += '.' + key
+            target = Index(target, Const(key))
+        if self.accept(':'):
+            key = self.expect_name()
+            name += ':' + key
+            target = Index(target, Const(key))
+            is_method = True
+        return Assign([target], [self.function_body(is_method, line, name)])
+
+    def local_stat(self):
+        names = [self.expect_name()]
+        while self.accept(','):
+            names.append(self.expect_name())
+        exprs = self.expr_list() if self.accept('=') else []
+        return Local(names, exprs)
+
+    def return_stat(self):
+        self.advance()
+        if self.tok.type in BLOCK_END or self.tok.type == ';':
+            exprs = []
         else:
-            return self.parse_expression_statement()
+            exprs = self.expr_list()
+        self.accept(';')
+        return Return(exprs)
 
-    def parse_local(self):
-        self.advance()
-
-        if self.match(TokenType.FUNCTION):
-            self.advance()
-            name = self.expect(TokenType.IDENTIFIER).value
-            self.expect(TokenType.LPAREN)
-            params = self.parse_parameter_list()
-            self.expect(TokenType.RPAREN)
-            body = self.parse_block([TokenType.END])
-            self.expect(TokenType.END)
-            return FunctionDef(name, params, body, is_local=True)
-
-        targets = [Identifier(self.expect(TokenType.IDENTIFIER).value)]
-        while self.match(TokenType.COMMA):
-            self.advance()
-            targets.append(Identifier(self.expect(TokenType.IDENTIFIER).value))
-
-        values = []
-        if self.match(TokenType.ASSIGN):
-            self.advance()
-            values.append(self.parse_expression())
-            while self.match(TokenType.COMMA):
-                self.advance()
-                values.append(self.parse_expression())
-
-        return Assignment(targets, values, is_local=True)
-
-    def parse_if(self):
-        self.advance()
-        condition = self.parse_expression()
-        self.expect(TokenType.THEN)
-        then_block = self.parse_block([TokenType.ELSEIF, TokenType.ELSE, TokenType.END])
-
-        elseif_blocks = []
-        while self.match(TokenType.ELSEIF):
-            self.advance()
-            elseif_cond = self.parse_expression()
-            self.expect(TokenType.THEN)
-            elseif_body = self.parse_block([TokenType.ELSEIF, TokenType.ELSE, TokenType.END])
-            elseif_blocks.append((elseif_cond, elseif_body))
-
-        else_block = []
-        if self.match(TokenType.ELSE):
-            self.advance()
-            else_block = self.parse_block([TokenType.END])
-
-        self.expect(TokenType.END)
-        return IfStatement(condition, then_block, elseif_blocks, else_block)
-
-    def parse_while(self):
-        self.advance()
-        condition = self.parse_expression()
-        self.expect(TokenType.DO)
-        body = self.parse_block([TokenType.END])
-        self.expect(TokenType.END)
-        return WhileStatement(condition, body)
-
-    def parse_repeat(self):
-        self.advance()
-        body = self.parse_block([TokenType.UNTIL])
-        self.expect(TokenType.UNTIL)
-        condition = self.parse_expression()
-        return RepeatStatement(body, condition)
-
-    def parse_for(self):
-        self.advance()
-        var = self.expect(TokenType.IDENTIFIER).value
-
-        if self.match(TokenType.ASSIGN):
-            self.advance()
-            start = self.parse_expression()
-            self.expect(TokenType.COMMA)
-            end = self.parse_expression()
-            step = None
-            if self.match(TokenType.COMMA):
-                self.advance()
-                step = self.parse_expression()
-            self.expect(TokenType.DO)
-            body = self.parse_block([TokenType.END])
-            self.expect(TokenType.END)
-            return ForStatement(var, start, end, step, body)
-
-        elif self.match(TokenType.COMMA, TokenType.IN):
-            vars = [var]
-            while self.match(TokenType.COMMA):
-                self.advance()
-                vars.append(self.expect(TokenType.IDENTIFIER).value)
-            self.expect(TokenType.IN)
-            iterator = self.parse_expression()
-            self.expect(TokenType.DO)
-            body = self.parse_block([TokenType.END])
-            self.expect(TokenType.END)
-            return ForInStatement(vars, iterator, body)
-
-        raise SyntaxError(f"Invalid for statement at {self.current_token.line}:{self.current_token.column}")
-
-    def parse_function(self):
-        self.advance()
-        name = None
-        if self.match(TokenType.IDENTIFIER):
-            name = self.current_token.value
-            self.advance()
-
-        self.expect(TokenType.LPAREN)
-        params = self.parse_parameter_list()
-        self.expect(TokenType.RPAREN)
-        body = self.parse_block([TokenType.END])
-        self.expect(TokenType.END)
-        return FunctionDef(name, params, body)
-
-    def parse_parameter_list(self):
-        params = []
-        if not self.match(TokenType.RPAREN):
-            params.append(self.expect(TokenType.IDENTIFIER).value)
-            while self.match(TokenType.COMMA):
-                self.advance()
-                params.append(self.expect(TokenType.IDENTIFIER).value)
-        return params
-
-    def parse_return(self):
-        self.advance()
-        values = []
-        if not self.match(TokenType.END, TokenType.SEMICOLON, TokenType.EOF):
-            values.append(self.parse_expression())
-            while self.match(TokenType.COMMA):
-                self.advance()
-                values.append(self.parse_expression())
-        return ReturnStatement(values)
-
-    def parse_block(self, terminators):
-        statements = []
-        while not self.match(*terminators) and not self.match(TokenType.EOF):
-            if self.match(TokenType.SEMICOLON):
-                self.advance()
-                continue
-            stmt = self.parse_statement()
-            if stmt:
-                statements.append(stmt)
-        return statements
-
-    def parse_expression_statement(self):
-        expr = self.parse_expression()
-
-        if self.match(TokenType.ASSIGN):
-            self.advance()
+    def expr_stat(self):
+        expr = self.suffixed_expr()
+        if self.tok.type in ('=', ','):
             targets = [expr]
-            while isinstance(expr, Identifier) or isinstance(expr, TableAccess):
-                if not self.match(TokenType.COMMA):
+            while self.accept(','):
+                targets.append(self.suffixed_expr())
+            for target in targets:
+                if target.__class__ is not Name and target.__class__ is not Index:
+                    self.error("syntax error")
+            self.expect('=')
+            return Assign(targets, self.expr_list())
+        if expr.__class__ is not Call and expr.__class__ is not MethodCall:
+            self.error("syntax error")
+        return CallStat(expr)
+
+    def function_body(self, is_method, line, name):
+        self.expect('(')
+        params = ['self'] if is_method else []
+        is_vararg = False
+        if self.tok.type != ')':
+            while True:
+                if self.tok.type == '...':
+                    self.advance()
+                    is_vararg = True
                     break
-                if self.peek().type == TokenType.ASSIGN:
+                params.append(self.expect_name())
+                if not self.accept(','):
                     break
-                self.advance()
-                next_expr = self.parse_expression()
-                if self.match(TokenType.ASSIGN):
-                    break
-                targets.append(next_expr)
+        self.expect(')')
+        self.vararg.append(is_vararg)
+        self.loop_depth.append(0)
+        body = self.block()
+        self.loop_depth.pop()
+        self.vararg.pop()
+        self.expect_match('end', 'function', line)
+        return Function(params, is_vararg, body, name)
 
-            values = [self.parse_expression()]
-            while self.match(TokenType.COMMA):
-                self.advance()
-                values.append(self.parse_expression())
+    # Expressions
 
-            return Assignment(targets, values)
+    def expr_list(self):
+        exprs = [self.expr()]
+        while self.accept(','):
+            exprs.append(self.expr())
+        return exprs
 
-        return expr
-
-    def parse_expression(self):
-        return self.parse_or()
-
-    def parse_or(self):
-        left = self.parse_and()
-        while self.match(TokenType.OR):
-            op = self.current_token.value
+    def expr(self, limit=0):
+        t = self.tok.type
+        if t == 'not' or t == '-' or t == '#':
             self.advance()
-            right = self.parse_and()
-            left = BinaryOp(left, op, right)
-        return left
-
-    def parse_and(self):
-        left = self.parse_comparison()
-        while self.match(TokenType.AND):
-            op = self.current_token.value
-            self.advance()
-            right = self.parse_comparison()
-            left = BinaryOp(left, op, right)
-        return left
-
-    def parse_comparison(self):
-        left = self.parse_concat()
-        while self.match(TokenType.EQ, TokenType.NE, TokenType.LT, TokenType.LE, TokenType.GT, TokenType.GE):
-            op = self.current_token.value
-            self.advance()
-            right = self.parse_concat()
-            left = BinaryOp(left, op, right)
-        return left
-
-    def parse_concat(self):
-        left = self.parse_additive()
-        while self.match(TokenType.CONCAT):
-            op = self.current_token.value
-            self.advance()
-            right = self.parse_additive()
-            left = BinaryOp(left, op, right)
-        return left
-
-    def parse_additive(self):
-        left = self.parse_multiplicative()
-        while self.match(TokenType.PLUS, TokenType.MINUS):
-            op = self.current_token.value
-            self.advance()
-            right = self.parse_multiplicative()
-            left = BinaryOp(left, op, right)
-        return left
-
-    def parse_multiplicative(self):
-        left = self.parse_unary()
-        while self.match(TokenType.ASTERISK, TokenType.SLASH, TokenType.PERCENT):
-            op = self.current_token.value
-            self.advance()
-            right = self.parse_unary()
-            left = BinaryOp(left, op, right)
-        return left
-
-    def parse_unary(self):
-        if self.match(TokenType.NOT, TokenType.MINUS, TokenType.LENGTH):
-            op = self.current_token.value
-            self.advance()
-            operand = self.parse_unary()
-            return UnaryOp(op, operand)
-        return self.parse_power()
-
-    def parse_power(self):
-        left = self.parse_postfix()
-        if self.match(TokenType.POWER):
-            op = self.current_token.value
-            self.advance()
-            right = self.parse_power()
-            return BinaryOp(left, op, right)
-        return left
-
-    def parse_postfix(self):
-        expr = self.parse_primary()
-
+            operand = self.expr(UNARY_PRIORITY)
+            if t == '-' and operand.__class__ is Const and operand.value.__class__ is float:
+                left = Const(-operand.value)
+            else:
+                left = UnOp(t, operand)
+        else:
+            left = self.simple_expr()
         while True:
-            if self.match(TokenType.LPAREN):
-                self.advance()
-                args = []
-                if not self.match(TokenType.RPAREN):
-                    args.append(self.parse_expression())
-                    while self.match(TokenType.COMMA):
-                        self.advance()
-                        args.append(self.parse_expression())
-                self.expect(TokenType.RPAREN)
-                expr = FunctionCall(expr, args)
-
-            elif self.match(TokenType.LBRACKET):
-                self.advance()
-                key = self.parse_expression()
-                self.expect(TokenType.RBRACKET)
-                expr = TableAccess(expr, key)
-
-            elif self.match(TokenType.DOT):
-                self.advance()
-                key = self.expect(TokenType.IDENTIFIER).value
-                expr = TableAccess(expr, StringLiteral(key))
-
+            op = self.tok.type
+            priority = BINARY_PRIORITY.get(op)
+            if priority is None or priority[0] <= limit:
+                return left
+            self.advance()
+            right = self.expr(priority[1])
+            if op == 'and':
+                left = And(left, right)
+            elif op == 'or':
+                left = Or(left, right)
             else:
-                break
+                left = BinOp(op, left, right)
 
-        return expr
-
-    def parse_primary(self):
-        if self.match(TokenType.NUMBER):
-            value = float(self.current_token.value)
+    def simple_expr(self):
+        tok = self.tok
+        t = tok.type
+        if t == 'number' or t == 'string':
             self.advance()
-            return NumberLiteral(value)
-
-        if self.match(TokenType.STRING):
-            value = self.current_token.value
+            return Const(tok.value)
+        if t == 'nil':
             self.advance()
-            return StringLiteral(value)
-
-        if self.match(TokenType.TRUE):
+            return Const(None)
+        if t == 'true':
             self.advance()
-            return BooleanLiteral(True)
-
-        if self.match(TokenType.FALSE):
+            return Const(True)
+        if t == 'false':
             self.advance()
-            return BooleanLiteral(False)
-
-        if self.match(TokenType.NIL):
+            return Const(False)
+        if t == '...':
+            if not self.vararg[-1]:
+                self.error("cannot use '...' outside a vararg function")
             self.advance()
-            return NilLiteral()
-
-        if self.match(TokenType.IDENTIFIER):
-            name = self.current_token.value
+            return Vararg()
+        if t == '{':
+            return self.table()
+        if t == 'function':
             self.advance()
-            return Identifier(name)
+            return self.function_body(False, tok.line, None)
+        return self.suffixed_expr()
 
-        if self.match(TokenType.LPAREN):
+    def primary_expr(self):
+        if self.tok.type == 'name':
+            return Name(self.expect_name())
+        if self.tok.type == '(':
+            line = self.tok.line
             self.advance()
-            expr = self.parse_expression()
-            self.expect(TokenType.RPAREN)
-            return expr
+            expr = self.expr()
+            self.expect_match(')', '(', line)
+            return Paren(expr)
+        self.error("unexpected symbol")
 
-        if self.match(TokenType.LBRACE):
-            return self.parse_table()
+    def suffixed_expr(self):
+        expr = self.primary_expr()
+        while True:
+            t = self.tok.type
+            if t == '.':
+                self.advance()
+                expr = Index(expr, Const(self.expect_name()))
+            elif t == '[':
+                self.advance()
+                key = self.expr()
+                self.expect(']')
+                expr = Index(expr, key)
+            elif t == ':':
+                self.advance()
+                name = self.expect_name()
+                line = self.tok.line
+                expr = MethodCall(expr, name, self.call_args())
+                expr.line = line
+            elif t == '(' or t == 'string' or t == '{':
+                line = self.tok.line
+                expr = Call(expr, self.call_args())
+                expr.line = line
+            else:
+                return expr
 
-        if self.match(TokenType.FUNCTION):
+    def call_args(self):
+        tok = self.tok
+        if tok.type == 'string':
             self.advance()
-            self.expect(TokenType.LPAREN)
-            params = self.parse_parameter_list()
-            self.expect(TokenType.RPAREN)
-            body = self.parse_block([TokenType.END])
-            self.expect(TokenType.END)
-            return FunctionDef(None, params, body)
-
-        raise SyntaxError(f"Unexpected token {self.current_token.type.name} at {self.current_token.line}:{self.current_token.column}")
-
-    def parse_table(self):
+            return [Const(tok.value)]
+        if tok.type == '{':
+            return [self.table()]
+        if tok.type != '(':
+            self.error("function arguments expected")
         self.advance()
-        fields = []
+        args = [] if self.tok.type == ')' else self.expr_list()
+        self.expect_match(')', '(', tok.line)
+        return args
 
-        while not self.match(TokenType.RBRACE) and not self.match(TokenType.EOF):
-            if self.match(TokenType.LBRACKET):
+    def table(self):
+        line = self.tok.line
+        self.expect('{')
+        items = []
+        while self.tok.type != '}':
+            if self.tok.type == '[':
                 self.advance()
-                key = self.parse_expression()
-                self.expect(TokenType.RBRACKET)
-                self.expect(TokenType.ASSIGN)
-                value = self.parse_expression()
-                fields.append((key, value))
-            elif self.match(TokenType.IDENTIFIER) and self.peek().type == TokenType.ASSIGN:
-                key = StringLiteral(self.current_token.value)
+                key = self.expr()
+                self.expect(']')
+                self.expect('=')
+                items.append((key, self.expr()))
+            elif self.tok.type == 'name' and self.peek_type() == '=':
+                key = Const(self.expect_name())
                 self.advance()
-                self.expect(TokenType.ASSIGN)
-                value = self.parse_expression()
-                fields.append((key, value))
+                items.append((key, self.expr()))
             else:
-                value = self.parse_expression()
-                fields.append((None, value))
-
-            if self.match(TokenType.COMMA, TokenType.SEMICOLON):
-                self.advance()
-            else:
+                items.append((None, self.expr()))
+            if not (self.accept(',') or self.accept(';')):
                 break
+        self.expect_match('}', '{', line)
+        return Table(items)
 
-        self.expect(TokenType.RBRACE)
-        return TableConstructor(fields)
+
+def parse(source: str, chunkname: str = 'input'):
+    return Parser(source, chunkname).parse()

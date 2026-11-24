@@ -1,43 +1,28 @@
-from .lexer import Lexer
-from .parser import Parser
+from .parser import parse
 from .evaluator import Evaluator
-from .lua_object import Environment, ReturnException
+from .lua_object import LuaFunction
 from .lua_builtins import setup_builtins
 
 
 class LuaInterpreter:
+    """Runs Lua code. Errors raise LuaError (LuaSyntaxError for parse errors)."""
+
     def __init__(self):
-        self.global_env = Environment()
-        setup_builtins(self.global_env)
-        self.evaluator = Evaluator(self.global_env)
+        self.runtime = Evaluator()
+        setup_builtins(self.runtime)
+        self.globals = self.runtime.G
 
-    def run(self, source: str):
-        try:
-            lexer = Lexer(source)
-            tokens = lexer.tokenize()
+    def compile(self, source: str, chunkname: str = 'input') -> LuaFunction:
+        return LuaFunction(parse(source, chunkname), None)
 
-            parser = Parser(tokens)
-            ast = parser.parse()
+    def call(self, func, *args) -> list:
+        return self.runtime.call(func, list(args))
 
-            result = self.evaluator.eval(ast, self.global_env)
-            return result
-        except ReturnException as e:
-            return e.values[0] if e.values else None
-        except SyntaxError as e:
-            print(f"Syntax Error: {e}")
-            return None
-        except Exception as e:
-            print(f"Runtime Error: {e}")
-            return None
+    def run(self, source: str, chunkname: str = 'input') -> list:
+        """Execute a chunk and return the list of values it returns."""
+        return self.call(self.compile(source, chunkname))
 
-    def run_file(self, filename: str):
-        try:
-            with open(filename, 'r', encoding='utf-8') as f:
-                source = f.read()
-            return self.run(source)
-        except FileNotFoundError:
-            print(f"Error: File '{filename}' not found")
-            return None
-        except Exception as e:
-            print(f"Error reading file: {e}")
-            return None
+    def run_file(self, filename: str) -> list:
+        with open(filename, 'r', encoding='utf-8') as f:
+            source = f.read()
+        return self.run(source, filename)

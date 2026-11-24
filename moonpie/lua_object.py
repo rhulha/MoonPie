@@ -1,183 +1,228 @@
-from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Optional, Callable
+"""Lua runtime values.
+
+Lua values map onto Python values: nil -> None, booleans -> bool,
+numbers -> float, strings -> str. Tables and functions use the classes below.
+"""
+
+import re
 
 
-class LuaValue(ABC):
-    @abstractmethod
-    def to_str(self):
-        pass
+class LuaError(Exception):
+    """A Lua runtime error. `value` is the Lua error object (usually a string).
 
-    @abstractmethod
-    def is_truthy(self):
-        pass
+    Errors raised without position information get "chunk:line:" prepended
+    by the evaluator; `level` says which call level the position refers to.
+    """
 
-    def to_number(self):
-        raise TypeError(f"Cannot convert {type(self).__name__} to number")
+    def __init__(self, value, level=1, positioned=False):
+        super().__init__(value)
+        self.value = value
+        self.level = level
+        self.positioned = positioned
 
-
-class LuaNil(LuaValue):
-    def to_str(self):
-        return "nil"
-
-    def is_truthy(self):
-        return False
-
-    def __repr__(self):
-        return "nil"
+    def __str__(self):
+        v = self.value
+        if isinstance(v, str):
+            return v
+        if is_number(v):
+            return num2str(v)
+        return f"(error object is a {type_name(v)} value)"
 
 
-class LuaBoolean(LuaValue):
-    def __init__(self, value: bool):
+class LuaSyntaxError(LuaError):
+    def __init__(self, message):
+        super().__init__(message, positioned=True)
+
+
+class _BoolKey:
+    """Table key stand-in for booleans, since True == 1 in Python."""
+    __slots__ = ('value',)
+
+    def __init__(self, value):
         self.value = value
 
-    def to_str(self):
-        return "true" if self.value else "false"
 
-    def is_truthy(self):
-        return self.value
-
-    def __repr__(self):
-        return str(self.value).lower()
+_TRUE = _BoolKey(True)
+_FALSE = _BoolKey(False)
 
 
-class LuaNumber(LuaValue):
-    def __init__(self, value: float):
-        self.value = value
-
-    def to_str(self):
-        if self.value == int(self.value):
-            return str(int(self.value))
-        return str(self.value)
-
-    def is_truthy(self):
-        return True
-
-    def to_number(self):
-        return self.value
-
-    def __repr__(self):
-        return self.to_str()
+def _norm(key):
+    if key is True:
+        return _TRUE
+    if key is False:
+        return _FALSE
+    return key
 
 
-class LuaString(LuaValue):
-    def __init__(self, value: str):
-        self.value = value
-
-    def to_str(self):
-        return self.value
-
-    def is_truthy(self):
-        return True
-
-    def to_number(self):
-        try:
-            return float(self.value)
-        except ValueError:
-            raise TypeError(f"Cannot convert string '{self.value}' to number")
-
-    def __repr__(self):
-        return f'"{self.value}"'
+def _denorm(key):
+    if key.__class__ is _BoolKey:
+        return key.value
+    return key
 
 
-class LuaTable(LuaValue):
-    def __init__(self):
-        self.array_part: List[LuaValue] = []
-        self.hash_part: Dict[str, LuaValue] = {}
+class LuaTable:
+    __slots__ = ('hash', 'metatable', '_n', '_keys', '_key_index')
 
-    def set(self, key: LuaValue, value: LuaValue):
-        if isinstance(key, LuaNumber):
-            idx = int(key.value)
-            if idx > 0 and idx == key.value:
-                while len(self.array_part) < idx:
-                    self.array_part.append(LuaNil())
-                self.array_part[idx - 1] = value
-                return
+    def __init__(self, items=None):
+        self.hash = {}
+        self.metatable = None
+        self._n = 0
+        self._keys = None
+        self._key_index = None
+        if items:
+            for k, v in items.items():
+                self.set(k, v)
 
-        key_str = key.to_str()
-        if isinstance(value, LuaNil):
-            self.hash_part.pop(key_str, None)
+    def get(self, key):
+        if key is True or key is False:
+            key = _norm(key)
+        return self.hash.get(key)
+
+    def set(self, key, value):
+        if key is True or key is False:
+            key = _norm(key)
+        elif key is None:
+            raise LuaError("table index is nil")
+        elif key != key:
+            raise LuaError("table index is NaN")
+        h = self.hash
+        if value is None:
+            h.pop(key, None)
         else:
-            self.hash_part[key_str] = value
-
-    def get(self, key: LuaValue):
-        if isinstance(key, LuaNumber):
-            idx = int(key.value)
-            if idx > 0 and idx == key.value and idx <= len(self.array_part):
-                return self.array_part[idx - 1]
-
-        key_str = key.to_str()
-        return self.hash_part.get(key_str, LuaNil())
+            if self._keys is not None and key not in h:
+                self._keys = None
+            h[key] = value
 
     def length(self):
-        return len(self.array_part)
-
-    def to_str(self):
-        return f"table: {id(self)}"
-
-    def is_truthy(self):
-        return True
-
-    def __repr__(self):
-        items = []
-        for i, val in enumerate(self.array_part, 1):
-            items.append(f"[{i}]={repr(val)}")
-        for key, val in self.hash_part.items():
-            items.append(f"{key}={repr(val)}")
-        return "{" + ", ".join(items) + "}"
-
-
-class LuaFunction(LuaValue):
-    def __init__(self, params: List[str], body, env, is_builtin=False):
-        self.params = params
-        self.body = body
-        self.closure_env = env
-        self.is_builtin = is_builtin
-
-    def to_str(self):
-        return f"function: {id(self)}"
-
-    def is_truthy(self):
-        return True
-
-    def __repr__(self):
-        return f"<function>"
-
-
-class BreakException(Exception):
-    pass
-
-
-class ReturnException(Exception):
-    def __init__(self, values: List[LuaValue]):
-        self.values = values
-
-
-class Environment:
-    def __init__(self, parent: Optional['Environment'] = None):
-        self.parent = parent
-        self.vars: Dict[str, LuaValue] = {}
-
-    def define(self, name: str, value: LuaValue):
-        self.vars[name] = value
-
-    def get(self, name: str):
-        if name in self.vars:
-            return self.vars[name]
-        if self.parent:
-            return self.parent.get(name)
-        return LuaNil()
-
-    def set(self, name: str, value: LuaValue):
-        if name in self.vars:
-            self.vars[name] = value
-        elif self.parent and self.parent.exists(name):
-            self.parent.set(name, value)
+        h = self.hash
+        n = self._n
+        if n > 0 and n not in h:
+            while n > 0 and n not in h:
+                n -= 1
         else:
-            self.vars[name] = value
+            while (n + 1) in h:
+                n += 1
+        self._n = n
+        return n
 
-    def exists(self, name: str):
-        if name in self.vars:
-            return True
-        if self.parent:
-            return self.parent.exists(name)
-        return False
+    def next(self, key):
+        """Return (key, value) following `key`, or None at the end."""
+        h = self.hash
+        if self._keys is None:
+            self._keys = list(h)
+            self._key_index = None
+        keys = self._keys
+        if key is None:
+            i = 0
+        else:
+            if self._key_index is None:
+                self._key_index = {k: i for i, k in enumerate(keys)}
+            i = self._key_index.get(_norm(key))
+            if i is None:
+                raise LuaError("invalid key to 'next'")
+            i += 1
+        while i < len(keys):
+            k = keys[i]
+            if k in h:
+                return _denorm(k), h[k]
+            i += 1
+        return None
+
+
+class LuaFunction:
+    """A Lua closure: a Function AST node plus the scope it was created in."""
+    __slots__ = ('node', 'closure')
+
+    def __init__(self, node, closure):
+        self.node = node
+        self.closure = closure
+
+
+class LuaBuiltin:
+    """A function implemented in Python. `fn(*args)` returns a list or None."""
+    __slots__ = ('name', 'fn')
+
+    def __init__(self, name, fn):
+        self.name = name
+        self.fn = fn
+
+
+def is_number(v):
+    c = v.__class__
+    return c is float or c is int
+
+
+def type_name(v):
+    if v is None:
+        return 'nil'
+    c = v.__class__
+    if c is bool:
+        return 'boolean'
+    if c is float or c is int:
+        return 'number'
+    if c is str:
+        return 'string'
+    if c is LuaTable:
+        return 'table'
+    if c is LuaFunction or c is LuaBuiltin:
+        return 'function'
+    return 'userdata'
+
+
+def num2str(n):
+    if n != n:
+        return 'nan'
+    if n == float('inf'):
+        return 'inf'
+    if n == float('-inf'):
+        return '-inf'
+    return '%.14g' % n
+
+
+def tostr(v):
+    """tostring() without metamethods."""
+    if v is None:
+        return 'nil'
+    c = v.__class__
+    if c is str:
+        return v
+    if c is bool:
+        return 'true' if v else 'false'
+    if c is float or c is int:
+        return num2str(v)
+    if c is LuaTable:
+        return 'table: 0x%08x' % id(v)
+    if c is LuaFunction or c is LuaBuiltin:
+        return 'function: 0x%08x' % id(v)
+    return str(v)
+
+
+_DEC_RE = re.compile(r'[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?')
+_HEX_RE = re.compile(r'[+-]?0[xX](?:[0-9a-fA-F]+\.?[0-9a-fA-F]*|\.[0-9a-fA-F]+)(?:[pP][+-]?[0-9]+)?')
+_LUA_SPACE = ' \f\n\r\t\v'
+
+
+def str2number(s):
+    """Convert a string to a number using Lua's rules; None if not numeric."""
+    s = s.strip(_LUA_SPACE)
+    if _DEC_RE.fullmatch(s):
+        return float(s)
+    if _HEX_RE.fullmatch(s):
+        return float.fromhex(s)
+    return None
+
+
+def tonum(v):
+    """Coerce a value to a number for arithmetic; None if not possible."""
+    c = v.__class__
+    if c is float:
+        return v
+    if c is int:
+        return float(v)
+    if c is str:
+        return str2number(v)
+    return None
+
+
+def truthy(v):
+    return v is not None and v is not False

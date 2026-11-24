@@ -1,14 +1,10 @@
 """
 MoonPie - A Lua interpreter written in Python
-
-A complete Lua interpreter implementing core Lua language features
-including functions, tables, closures, loops, and standard libraries.
 """
 
 from .lua_interpreter import LuaInterpreter
+from .lua_object import LuaError, LuaSyntaxError, LuaTable
 
-__version__ = "0.1.0"
-__author__ = "MoonPie"
-__email__ = "moonpie@example.com"
+__version__ = "0.2.0"
 
-__all__ = ["LuaInterpreter"]
+__all__ = ["LuaInterpreter", "LuaError", "LuaSyntaxError", "LuaTable"]

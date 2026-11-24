@@ -1,268 +1,232 @@
-from .lua_token import Token, TokenType
+from .lua_object import LuaSyntaxError, str2number, num2str
 
 
-KEYWORDS = {
-    'and': TokenType.AND,
-    'break': TokenType.BREAK,
-    'do': TokenType.DO,
-    'else': TokenType.ELSE,
-    'elseif': TokenType.ELSEIF,
-    'end': TokenType.END,
-    'false': TokenType.FALSE,
-    'for': TokenType.FOR,
-    'function': TokenType.FUNCTION,
-    'if': TokenType.IF,
-    'in': TokenType.IN,
-    'local': TokenType.LOCAL,
-    'nil': TokenType.NIL,
-    'not': TokenType.NOT,
-    'or': TokenType.OR,
-    'repeat': TokenType.REPEAT,
-    'return': TokenType.RETURN,
-    'then': TokenType.THEN,
-    'true': TokenType.TRUE,
-    'until': TokenType.UNTIL,
-    'while': TokenType.WHILE,
+KEYWORDS = frozenset({
+    'and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for', 'function',
+    'if', 'in', 'local', 'nil', 'not', 'or', 'repeat', 'return', 'then', 'true',
+    'until', 'while',
+})
+
+OPERATORS_3 = ('...',)
+OPERATORS_2 = ('==', '~=', '<=', '>=', '//', '..')
+OPERATORS_1 = frozenset('+-*/%^#<>=(){}[];:,.')
+
+NAME_START = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_')
+NAME_CHARS = NAME_START | frozenset('0123456789')
+DIGITS = frozenset('0123456789')
+HEX_DIGITS = frozenset('0123456789abcdefABCDEF')
+SPACE = frozenset(' \t\r\n\f\v')
+
+SIMPLE_ESCAPES = {
+    'a': '\a', 'b': '\b', 'f': '\f', 'n': '\n', 'r': '\r', 't': '\t',
+    'v': '\v', '\\': '\\', '"': '"', "'": "'", '\n': '\n',
 }
 
 
+class Token:
+    __slots__ = ('type', 'value', 'line')
+
+    def __init__(self, type, value, line):
+        self.type = type
+        self.value = value
+        self.line = line
+
+    def text(self):
+        if self.type == 'eof':
+            return '<eof>'
+        if self.type == 'number':
+            return num2str(self.value)
+        return self.value
+
+    def __repr__(self):
+        return f"Token({self.type!r}, {self.value!r}, line {self.line})"
+
+
 class Lexer:
-    def __init__(self, source: str):
-        self.source = source
+    def __init__(self, source: str, chunkname: str = 'input'):
+        self.src = source
+        self.chunkname = chunkname
         self.pos = 0
         self.line = 1
-        self.column = 1
-        self.current_char = self.source[0] if source else None
+        if source.startswith('#'):
+            end = source.find('\n')
+            self.pos = len(source) if end < 0 else end
 
-    def advance(self):
-        if self.current_char == '\n':
-            self.line += 1
-            self.column = 1
-        else:
-            self.column += 1
-
-        self.pos += 1
-        if self.pos >= len(self.source):
-            self.current_char = None
-        else:
-            self.current_char = self.source[self.pos]
-
-    def peek(self, offset=1):
-        peek_pos = self.pos + offset
-        if peek_pos >= len(self.source):
-            return None
-        return self.source[peek_pos]
-
-    def skip_whitespace(self):
-        while self.current_char and self.current_char in ' \t\n\r':
-            self.advance()
-
-    def skip_comment(self):
-        if self.current_char == '-' and self.peek() == '-':
-            self.advance()
-            self.advance()
-
-            if self.current_char == '[' and self.peek() == '[':
-                self.advance()
-                self.advance()
-                while self.current_char:
-                    if self.current_char == ']' and self.peek() == ']':
-                        self.advance()
-                        self.advance()
-                        break
-                    self.advance()
-            else:
-                while self.current_char and self.current_char != '\n':
-                    self.advance()
-
-    def read_number(self):
-        num_str = ''
-        has_dot = False
-
-        while self.current_char and (self.current_char.isdigit() or self.current_char == '.'):
-            if self.current_char == '.':
-                if has_dot or (self.peek() and self.peek() == '.'):
-                    break
-                has_dot = True
-            num_str += self.current_char
-            self.advance()
-
-        return num_str
-
-    def read_string(self, quote):
-        string_val = ''
-        self.advance()
-
-        while self.current_char and self.current_char != quote:
-            if self.current_char == '\\':
-                self.advance()
-                if self.current_char == 'n':
-                    string_val += '\n'
-                elif self.current_char == 't':
-                    string_val += '\t'
-                elif self.current_char == 'r':
-                    string_val += '\r'
-                elif self.current_char == '\\':
-                    string_val += '\\'
-                elif self.current_char == quote:
-                    string_val += quote
-                else:
-                    string_val += self.current_char
-                self.advance()
-            else:
-                string_val += self.current_char
-                self.advance()
-
-        if self.current_char == quote:
-            self.advance()
-
-        return string_val
-
-    def read_identifier(self):
-        id_str = ''
-        while self.current_char and (self.current_char.isalnum() or self.current_char == '_'):
-            id_str += self.current_char
-            self.advance()
-        return id_str
-
-    def get_next_token(self):
-        while self.current_char:
-            if self.current_char in ' \t\n\r':
-                self.skip_whitespace()
-                continue
-
-            if self.current_char == '-' and self.peek() == '-':
-                self.skip_comment()
-                continue
-
-            line, col = self.line, self.column
-
-            if self.current_char.isdigit():
-                return Token(TokenType.NUMBER, self.read_number(), line, col)
-
-            if self.current_char in ('"', "'"):
-                quote = self.current_char
-                string_val = self.read_string(quote)
-                return Token(TokenType.STRING, string_val, line, col)
-
-            if self.current_char.isalpha() or self.current_char == '_':
-                id_str = self.read_identifier()
-                token_type = KEYWORDS.get(id_str, TokenType.IDENTIFIER)
-                return Token(token_type, id_str, line, col)
-
-            if self.current_char == '+':
-                self.advance()
-                return Token(TokenType.PLUS, '+', line, col)
-
-            if self.current_char == '-':
-                self.advance()
-                return Token(TokenType.MINUS, '-', line, col)
-
-            if self.current_char == '*':
-                self.advance()
-                return Token(TokenType.ASTERISK, '*', line, col)
-
-            if self.current_char == '/':
-                self.advance()
-                return Token(TokenType.SLASH, '/', line, col)
-
-            if self.current_char == '%':
-                self.advance()
-                return Token(TokenType.PERCENT, '%', line, col)
-
-            if self.current_char == '^':
-                self.advance()
-                return Token(TokenType.POWER, '^', line, col)
-
-            if self.current_char == '#':
-                self.advance()
-                return Token(TokenType.LENGTH, '#', line, col)
-
-            if self.current_char == '=':
-                self.advance()
-                if self.current_char == '=':
-                    self.advance()
-                    return Token(TokenType.EQ, '==', line, col)
-                return Token(TokenType.ASSIGN, '=', line, col)
-
-            if self.current_char == '~':
-                self.advance()
-                if self.current_char == '=':
-                    self.advance()
-                    return Token(TokenType.NE, '~=', line, col)
-                return Token(TokenType.ILLEGAL, '~', line, col)
-
-            if self.current_char == '<':
-                self.advance()
-                if self.current_char == '=':
-                    self.advance()
-                    return Token(TokenType.LE, '<=', line, col)
-                return Token(TokenType.LT, '<', line, col)
-
-            if self.current_char == '>':
-                self.advance()
-                if self.current_char == '=':
-                    self.advance()
-                    return Token(TokenType.GE, '>=', line, col)
-                return Token(TokenType.GT, '>', line, col)
-
-            if self.current_char == '.':
-                self.advance()
-                if self.current_char == '.':
-                    self.advance()
-                    if self.current_char == '.':
-                        self.advance()
-                        return Token(TokenType.DOUBLEDOT, '...', line, col)
-                    return Token(TokenType.CONCAT, '..', line, col)
-                return Token(TokenType.DOT, '.', line, col)
-
-            if self.current_char == ':':
-                self.advance()
-                return Token(TokenType.COLON, ':', line, col)
-
-            if self.current_char == ',':
-                self.advance()
-                return Token(TokenType.COMMA, ',', line, col)
-
-            if self.current_char == ';':
-                self.advance()
-                return Token(TokenType.SEMICOLON, ';', line, col)
-
-            if self.current_char == '(':
-                self.advance()
-                return Token(TokenType.LPAREN, '(', line, col)
-
-            if self.current_char == ')':
-                self.advance()
-                return Token(TokenType.RPAREN, ')', line, col)
-
-            if self.current_char == '{':
-                self.advance()
-                return Token(TokenType.LBRACE, '{', line, col)
-
-            if self.current_char == '}':
-                self.advance()
-                return Token(TokenType.RBRACE, '}', line, col)
-
-            if self.current_char == '[':
-                self.advance()
-                return Token(TokenType.LBRACKET, '[', line, col)
-
-            if self.current_char == ']':
-                self.advance()
-                return Token(TokenType.RBRACKET, ']', line, col)
-
-            char = self.current_char
-            self.advance()
-            return Token(TokenType.ILLEGAL, char, line, col)
-
-        return Token(TokenType.EOF, '', self.line, self.column)
+    def error(self, msg, near=None):
+        where = f" near '{near}'" if near is not None else ''
+        raise LuaSyntaxError(f"{self.chunkname}:{self.line}: {msg}{where}")
 
     def tokenize(self):
         tokens = []
+        src = self.src
+        n = len(src)
         while True:
-            token = self.get_next_token()
-            tokens.append(token)
-            if token.type == TokenType.EOF:
+            self.skip_space_and_comments()
+            if self.pos >= n:
+                tokens.append(Token('eof', '<eof>', self.line))
+                return tokens
+            c = src[self.pos]
+            line = self.line
+
+            if c in NAME_START:
+                start = self.pos
+                i = start + 1
+                while i < n and src[i] in NAME_CHARS:
+                    i += 1
+                word = src[start:i]
+                self.pos = i
+                tokens.append(Token(word if word in KEYWORDS else 'name', word, line))
+            elif c in DIGITS or (c == '.' and self.pos + 1 < n and src[self.pos + 1] in DIGITS):
+                tokens.append(Token('number', self.read_number(), line))
+            elif c == '"' or c == "'":
+                tokens.append(Token('string', self.read_string(c), line))
+            elif c == '[' and self.long_bracket_level() is not None:
+                tokens.append(Token('string', self.read_long_bracket(), line))
+            else:
+                op = None
+                for candidate in OPERATORS_3 + OPERATORS_2:
+                    if src.startswith(candidate, self.pos):
+                        op = candidate
+                        break
+                if op is None and c in OPERATORS_1:
+                    op = c
+                if op is None:
+                    self.error("unexpected symbol", c)
+                self.pos += len(op)
+                tokens.append(Token(op, op, line))
+
+    def skip_space_and_comments(self):
+        src = self.src
+        n = len(src)
+        while self.pos < n:
+            c = src[self.pos]
+            if c in SPACE:
+                if c == '\n':
+                    self.line += 1
+                self.pos += 1
+            elif c == '-' and src.startswith('--', self.pos):
+                self.pos += 2
+                if self.pos < n and src[self.pos] == '[' and self.long_bracket_level() is not None:
+                    self.read_long_bracket()
+                else:
+                    end = src.find('\n', self.pos)
+                    self.pos = n if end < 0 else end
+            else:
+                return
+
+    def long_bracket_level(self):
+        """If a long bracket ([[, [==[ ...) starts at pos, return its level."""
+        src = self.src
+        i = self.pos + 1
+        while i < len(src) and src[i] == '=':
+            i += 1
+        if i < len(src) and src[i] == '[':
+            return i - self.pos - 1
+        if i > self.pos + 1:
+            self.error("invalid long string delimiter", src[self.pos:i])
+        return None
+
+    def read_long_bracket(self):
+        src = self.src
+        level = self.long_bracket_level()
+        start = self.pos + level + 2
+        close = ']' + '=' * level + ']'
+        end = src.find(close, start)
+        if end < 0:
+            self.error("unfinished long string/comment", '<eof>')
+        text = src[start:end]
+        self.line += text.count('\n')
+        self.pos = end + len(close)
+        if text.startswith('\r\n') or text.startswith('\n\r'):
+            text = text[2:]
+        elif text.startswith('\n') or text.startswith('\r'):
+            text = text[1:]
+        return text
+
+    def read_number(self):
+        src = self.src
+        n = len(src)
+        start = i = self.pos
+        exponent = 'Ee'
+        if src.startswith(('0x', '0X'), i):
+            exponent = 'Pp'
+            i += 2
+        while i < n:
+            c = src[i]
+            if c in exponent and i + 1 < n and src[i + 1] in '+-':
+                i += 2
+            elif c in NAME_CHARS or c == '.':
+                i += 1
+            else:
                 break
-        return tokens
+        text = src[start:i]
+        self.pos = i
+        value = str2number(text)
+        if value is None:
+            self.error("malformed number", text)
+        return value
+
+    def read_string(self, quote):
+        src = self.src
+        n = len(src)
+        i = self.pos + 1
+        parts = []
+        while True:
+            if i >= n:
+                self.error("unfinished string", '<eof>')
+            c = src[i]
+            if c == quote:
+                break
+            if c == '\n':
+                self.error("unfinished string", src[self.pos:i])
+            if c != '\\':
+                j = i
+                while j < n and src[j] not in (quote, '\\', '\n'):
+                    j += 1
+                parts.append(src[i:j])
+                i = j
+                continue
+
+            i += 1
+            e = src[i] if i < n else ''
+            if e in SIMPLE_ESCAPES:
+                if e == '\n':
+                    self.line += 1
+                parts.append(SIMPLE_ESCAPES[e])
+                i += 1
+            elif e == 'x':
+                digits = src[i + 1:i + 3]
+                if len(digits) != 2 or not all(d in HEX_DIGITS for d in digits):
+                    self.error("hexadecimal digit expected", '\\x' + digits)
+                parts.append(chr(int(digits, 16)))
+                i += 3
+            elif e == 'z':
+                i += 1
+                while i < n and src[i] in SPACE:
+                    if src[i] == '\n':
+                        self.line += 1
+                    i += 1
+            elif e in DIGITS:
+                j = i
+                while j < n and j < i + 3 and src[j] in DIGITS:
+                    j += 1
+                code = int(src[i:j])
+                if code > 255:
+                    self.error("decimal escape too large", '\\' + src[i:j])
+                parts.append(chr(code))
+                i = j
+            elif e == 'u' and src.startswith('{', i + 1):
+                end = src.find('}', i + 2)
+                digits = src[i + 2:end] if end > 0 else ''
+                if not digits or not all(d in HEX_DIGITS for d in digits):
+                    self.error("hexadecimal digit expected", '\\u{' + digits)
+                parts.append(chr(int(digits, 16)))
+                i = end + 1
+            else:
+                self.error("invalid escape sequence", '\\' + e)
+        self.pos = i + 1
+        return ''.join(parts)
+
+
+def tokenize(source: str, chunkname: str = 'input'):
+    return Lexer(source, chunkname).tokenize()

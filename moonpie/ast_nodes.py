@@ -1,186 +1,119 @@
-from abc import ABC, abstractmethod
-from typing import List, Optional, Any
+class Node:
+    __slots__ = ('line',)
 
-
-class ASTNode(ABC):
-    @abstractmethod
-    def __repr__(self):
-        pass
-
-
-class Program(ASTNode):
-    def __init__(self, statements: List[ASTNode]):
-        self.statements = statements
+    def __init__(self, *args):
+        for name, value in zip(self.__slots__, args):
+            setattr(self, name, value)
+        self.line = 0
 
     def __repr__(self):
-        return f"Program({self.statements})"
+        fields = ', '.join(repr(getattr(self, n)) for n in self.__slots__)
+        return f"{type(self).__name__}({fields})"
 
 
-class NumberLiteral(ASTNode):
-    def __init__(self, value: float):
-        self.value = value
+# Expressions
 
-    def __repr__(self):
-        return f"Number({self.value})"
+class Const(Node):
+    __slots__ = ('value',)
 
 
-class StringLiteral(ASTNode):
-    def __init__(self, value: str):
-        self.value = value
-
-    def __repr__(self):
-        return f"String({repr(self.value)})"
+class Vararg(Node):
+    __slots__ = ()
 
 
-class BooleanLiteral(ASTNode):
-    def __init__(self, value: bool):
-        self.value = value
-
-    def __repr__(self):
-        return f"Boolean({self.value})"
+class Name(Node):
+    __slots__ = ('name',)
 
 
-class NilLiteral(ASTNode):
-    def __repr__(self):
-        return "Nil"
+class Index(Node):
+    __slots__ = ('obj', 'key')
 
 
-class Identifier(ASTNode):
-    def __init__(self, name: str):
-        self.name = name
-
-    def __repr__(self):
-        return f"Identifier({self.name})"
+class Call(Node):
+    __slots__ = ('func', 'args')
 
 
-class BinaryOp(ASTNode):
-    def __init__(self, left: ASTNode, operator: str, right: ASTNode):
-        self.left = left
-        self.operator = operator
-        self.right = right
-
-    def __repr__(self):
-        return f"BinaryOp({self.left} {self.operator} {self.right})"
+class MethodCall(Node):
+    __slots__ = ('obj', 'name', 'args')
 
 
-class UnaryOp(ASTNode):
-    def __init__(self, operator: str, operand: ASTNode):
-        self.operator = operator
-        self.operand = operand
-
-    def __repr__(self):
-        return f"UnaryOp({self.operator} {self.operand})"
+class Function(Node):
+    __slots__ = ('params', 'is_vararg', 'body', 'name')
 
 
-class Assignment(ASTNode):
-    def __init__(self, targets: List[ASTNode], values: List[ASTNode], is_local: bool = False):
-        self.targets = targets
-        self.values = values
-        self.is_local = is_local
-
-    def __repr__(self):
-        local_str = "local " if self.is_local else ""
-        return f"Assignment({local_str}{self.targets} = {self.values})"
+class BinOp(Node):
+    __slots__ = ('op', 'left', 'right')
 
 
-class TableConstructor(ASTNode):
-    def __init__(self, fields: List[tuple]):
-        self.fields = fields
-
-    def __repr__(self):
-        return f"Table({self.fields})"
+class And(Node):
+    __slots__ = ('left', 'right')
 
 
-class TableAccess(ASTNode):
-    def __init__(self, table: ASTNode, key: ASTNode):
-        self.table = table
-        self.key = key
-
-    def __repr__(self):
-        return f"TableAccess({self.table}[{self.key}])"
+class Or(Node):
+    __slots__ = ('left', 'right')
 
 
-class FunctionDef(ASTNode):
-    def __init__(self, name: Optional[str], params: List[str], body: List[ASTNode], is_local: bool = False):
-        self.name = name
-        self.params = params
-        self.body = body
-        self.is_local = is_local
-
-    def __repr__(self):
-        name_str = self.name if self.name else "<anonymous>"
-        return f"FunctionDef({name_str}, {self.params}, {len(self.body)} stmts)"
+class UnOp(Node):
+    __slots__ = ('op', 'operand')
 
 
-class FunctionCall(ASTNode):
-    def __init__(self, function: ASTNode, args: List[ASTNode]):
-        self.function = function
-        self.args = args
-
-    def __repr__(self):
-        return f"FunctionCall({self.function}, {self.args})"
+class Paren(Node):
+    __slots__ = ('expr',)
 
 
-class IfStatement(ASTNode):
-    def __init__(self, condition: ASTNode, then_block: List[ASTNode],
-                 elseif_blocks: List[tuple] = None, else_block: List[ASTNode] = None):
-        self.condition = condition
-        self.then_block = then_block
-        self.elseif_blocks = elseif_blocks or []
-        self.else_block = else_block or []
-
-    def __repr__(self):
-        return f"IfStatement({self.condition}, then={len(self.then_block)}, elseif={len(self.elseif_blocks)}, else={len(self.else_block)})"
+class Table(Node):
+    __slots__ = ('items',)  # list of (key_expr or None, value_expr)
 
 
-class WhileStatement(ASTNode):
-    def __init__(self, condition: ASTNode, body: List[ASTNode]):
-        self.condition = condition
-        self.body = body
+# Statements
 
-    def __repr__(self):
-        return f"WhileStatement({self.condition}, {len(self.body)} stmts)"
+class Block(Node):
+    __slots__ = ('stmts', 'has_locals', 'chunk')
 
 
-class RepeatStatement(ASTNode):
-    def __init__(self, body: List[ASTNode], condition: ASTNode):
-        self.body = body
-        self.condition = condition
-
-    def __repr__(self):
-        return f"RepeatStatement({len(self.body)} stmts, until {self.condition})"
+class Local(Node):
+    __slots__ = ('names', 'exprs')
 
 
-class ForStatement(ASTNode):
-    def __init__(self, var: str, start: ASTNode, end: ASTNode, step: Optional[ASTNode], body: List[ASTNode]):
-        self.var = var
-        self.start = start
-        self.end = end
-        self.step = step
-        self.body = body
-
-    def __repr__(self):
-        return f"ForStatement({self.var}, {self.start}, {self.end}, {self.step}, {len(self.body)} stmts)"
+class LocalFunction(Node):
+    __slots__ = ('name', 'func')
 
 
-class ForInStatement(ASTNode):
-    def __init__(self, vars: List[str], iterator: ASTNode, body: List[ASTNode]):
-        self.vars = vars
-        self.iterator = iterator
-        self.body = body
-
-    def __repr__(self):
-        return f"ForInStatement({self.vars} in {self.iterator}, {len(self.body)} stmts)"
+class Assign(Node):
+    __slots__ = ('targets', 'exprs')
 
 
-class ReturnStatement(ASTNode):
-    def __init__(self, values: List[ASTNode]):
-        self.values = values
-
-    def __repr__(self):
-        return f"ReturnStatement({self.values})"
+class CallStat(Node):
+    __slots__ = ('call',)
 
 
-class BreakStatement(ASTNode):
-    def __repr__(self):
-        return "BreakStatement"
+class Do(Node):
+    __slots__ = ('body',)
+
+
+class While(Node):
+    __slots__ = ('cond', 'body')
+
+
+class Repeat(Node):
+    __slots__ = ('body', 'cond')
+
+
+class If(Node):
+    __slots__ = ('tests', 'blocks', 'orelse')
+
+
+class NumFor(Node):
+    __slots__ = ('var', 'start', 'stop', 'step', 'body')
+
+
+class GenFor(Node):
+    __slots__ = ('names', 'exprs', 'body')
+
+
+class Return(Node):
+    __slots__ = ('exprs',)
+
+
+class Break(Node):
+    __slots__ = ()
